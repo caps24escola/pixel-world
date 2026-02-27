@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Glubo Maps</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet-geosearch@3/dist/geosearch.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" defer></script>
+    <script src="https://unpkg.com/leaflet-geosearch@3/dist/geosearch.umd.js" defer></script>
+    <style>
+      body { margin: 0; padding: 0; }
+      #map { height: 100vh; width: 100vw; background-color: #1a1a1a; cursor: default; }
+      #map.draw-mode-cursor { cursor: crosshair; }
+      .leaflet-control-geosearch a.glass, .leaflet-control-geosearch .results a.glass { background-color: #444; border-color: #666; }
+      .leaflet-control-geosearch a.glass:hover { background-color: #555; }
+      .leaflet-control-geosearch form { border-color: #666; }
+      .leaflet-control-geosearch form input { background-color: #2a2a2e; border-color: #666; color: #f0f0f0; }
+      .leaflet-control-geosearch .results { background-color: #2a2a2e; border-color: #666; }
+      .leaflet-control-geosearch .results > * { color: #f0f0f0; border-color: #444; }
+      .leaflet-control-geosearch .results > *:hover { background-color: #555; }
+    </style>
+  </head>
+  <body>
+    <div id="map"></div>
+    <script>
+      document.addEventListener('DOMContentLoaded', function () {
+        let isDrawMode = true;
+        let isMouseDown = false;
+        let isSpacebarDown = false;
+        let gridLayer = null;
+        let searchControl = null;
+        const drawnPixels = L.layerGroup();
+        const mapElement = document.getElementById('map');
+        let currentLatLng = null;
+
+        const PIXEL_SIZE_DEGREES = 0.00008;
+
+        var map = L.map('map', { center: [-20.26, -40.42], zoom: 18, zoomControl: false });
+        L.control.zoom({ position: 'topleft' }).addTo(map);
+
+        map.createPane('labels');
+        map.getPane('labels').style.zIndex = 650;
+        map.getPane('labels').style.pointerEvents = 'none';
+
+        L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', { attribution: 'Tiles &copy; Esri' }).addTo(map);
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', { attribution: '&copy; CARTO', subdomains: 'abcd', pane: 'labels', opacity: 0.8 }).addTo(map);
+        drawnPixels.addTo(map);
+
+        searchControl = new GeoSearch.GeoSearchControl({ provider: new GeoSearch.OpenStreetMapProvider(), style: 'bar', showMarker: true, marker: { icon: new L.Icon.Default(), draggable: false }, autoClose: true, searchLabel: 'Search for a place...' });
+
+        function createGrid() {
+          if (gridLayer) map.removeLayer(gridLayer);
+          gridLayer = L.layerGroup();
+          const bounds = map.getBounds();
+          const south = Math.floor(bounds.getSouth() / PIXEL_SIZE_DEGREES) * PIXEL_SIZE_DEGREES;
+          const west = Math.floor(bounds.getWest() / PIXEL_SIZE_DEGREES) * PIXEL_SIZE_DEGREES;
+          const north = Math.ceil(bounds.getNorth() / PIXEL_SIZE_DEGREES) * PIXEL_SIZE_DEGREES;
+          const east = Math.ceil(bounds.getEast() / PIXEL_SIZE_DEGREES) * PIXEL_SIZE_DEGREES;
+
+          for (let lat = south; lat < north; lat += PIXEL_SIZE_DEGREES) { L.polyline([[lat, west], [lat, east]], { color: 'rgba(255, 255, 255, 0.2)', weight: 0.5, interactive: false }).addTo(gridLayer); }
+          for (let lng = west; lng < east; lng += PIXEL_SIZE_DEGREES) { L.polyline([[south, lng], [north, lng]], { color: 'rgba(255, 255, 255, 0.2)', weight: 0.5, interactive: false }).addTo(gridLayer); }
+          if (isDrawMode) gridLayer.addTo(map);
+        }
+        
+        function addPixel(lat, lng, color) {
+            const snappedLat = Math.floor(lat / PIXEL_SIZE_DEGREES) * PIXEL_SIZE_DEGREES;
+            const snappedLng = Math.floor(lng / PIXEL_SIZE_DEGREES) * PIXEL_SIZE_DEGREES;
+            drawnPixels.eachLayer(function (layer) {
+                const bounds = layer.getBounds();
+                if (bounds.contains([snappedLat + PIXEL_SIZE_DEGREES / 2, snappedLng + PIXEL_SIZE_DEGREES / 2])) {
+                    drawnPixels.removeLayer(layer);
+                }
+            });
+            if (color !== 'transparent') {
+                const pixelBounds = [[snappedLat, snappedLng], [snappedLat + PIXEL_SIZE_DEGREES, snappedLng + PIXEL_SIZE_DEGREES]];
+                const pixel = L.rectangle(pixelBounds, { color: color, weight: 0, fillColor: color, fillOpacity: 0.8, interactive: false });
+                drawnPixels.addLayer(pixel);
+            }
+        }
+        
+        function clearPixels() { drawnPixels.clearLayers(); }
+
+        // --- MOUSE/KEYBOARD DRAWING EVENTS ---
+        function sendDrawMessage(e) {
+          window.parent.postMessage({ type: 'mapClick', lat: e.latlng.lat, lng: e.latlng.lng }, '*');
+        }
+
+        map.on('mousedown', function(e) { 
+          if (!isDrawMode) return;
+          isMouseDown = true;
+          sendDrawMessage(e);
+        });
+
+        map.on('mousemove', function(e) {
+          currentLatLng = e.latlng;
+          if (!isDrawMode) return;
+          if (isMouseDown || isSpacebarDown) {
+            sendDrawMessage(e);
+          }
+        });
+
+        map.on('mouseup', function() { isMouseDown = false; });
+        map.on('mouseout', function() { isMouseDown = false; }); 
+
+        document.addEventListener('keydown', function(e) {
+            if (isDrawMode && e.code === 'Space') {
+                e.preventDefault();
+                isSpacebarDown = true;
+                if (currentLatLng) {
+                    sendDrawMessage({ latlng: currentLatLng });
+                }
+            }
+        });
+
+        document.addEventListener('keyup', function(e) {
+            if (isDrawMode && e.code === 'Space') {
+                e.preventDefault();
+                isSpacebarDown = false;
+            }
+        });
+
+        map.on('moveend', createGrid);
+        map.on('zoomend', createGrid);
+
+        window.addEventListener('message', function(event) {
+            const { action, isDrawMode: newDrawMode, lat, lng, color } = event.data;
+            switch (action) {
+                case 'setDrawMode':
+                    isDrawMode = newDrawMode;
+                    mapElement.classList.toggle('draw-mode-cursor', isDrawMode);
+                    if (isDrawMode) {
+                        map.dragging.disable();
+                        if (searchControl) map.removeControl(searchControl);
+                        createGrid();
+                    } else {
+                        map.dragging.enable();
+                        if (searchControl) map.addControl(searchControl);
+                        if (gridLayer) map.removeLayer(gridLayer);
+                    }
+                    break;
+                case 'addPixel': addPixel(lat, lng, color); break;
+                case 'clearPixels': clearPixels(); break;
+            }
+        });
+
+        // Initial setup
+        map.dragging.disable();
+        createGrid();
+        mapElement.classList.add('draw-mode-cursor');
+      });
+    </script>
+  </body>
+</html>
